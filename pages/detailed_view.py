@@ -329,3 +329,4 @@ if username and st.session_state.user_data:
 
 elif username and not st.session_state.user_data and not need_fetch:
     st.info("Enter a username to fetch GitLab data")
+
