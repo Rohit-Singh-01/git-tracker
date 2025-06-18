@@ -1,5 +1,4 @@
 
-
 import streamlit as st
 import asyncio
 import aiohttp
@@ -10,7 +9,6 @@ import hashlib
 # --- CONFIG ---
 GITLAB_TOKEN = st.secrets["gitlab"]["token"]
 BASE_URL = st.secrets["gitlab"]["base_url"]
-
 STATE_PREFIX = "gitlab_tracker_"
 
 # Initialize session state keys if not present
@@ -23,7 +21,6 @@ persistent_keys = {
         "metric_filter": "All Metrics"
     }
 }
-
 for key, default_value in persistent_keys.items():
     if key not in st.session_state:
         st.session_state[key] = default_value
@@ -90,18 +87,16 @@ async def fetch_commits(session, project_id, user_id, username, start_date, end_
             max_pages=10
         )
         user_commits.extend(commits)
-    except Exception as e:
+    except Exception:
         pass
 
     # Strategy 2: Get user info and try with emails
     try:
         user_info = await fetch_json(session, f"{BASE_URL}/users/{user_id}")
-        user_emails = [
+        user_emails = [email.lower() for email in [
             user_info.get("email"),
             user_info.get("public_email")
-        ]
-        user_emails = [email.lower() for email in user_emails if email]
-
+        ] if email]
         for email in user_emails:
             try:
                 commits = await fetch_json_with_pagination(
@@ -135,11 +130,10 @@ async def fetch_commits(session, project_id, user_id, username, start_date, end_
             user_info = await fetch_json(session, f"{BASE_URL}/users/{user_id}")
             user_name = user_info.get('name', '').lower()
             user_username = user_info.get('username', '').lower()
-            user_emails = [
+            user_emails = [email.lower() for email in [
                 user_info.get('email', ''),
                 user_info.get('public_email', '')
-            ]
-            user_emails = [email.lower() for email in user_emails if email]
+            ] if email]
 
             for commit in all_commits:
                 author_name = commit.get('author_name', '').lower()
@@ -166,7 +160,6 @@ async def fetch_commits(session, project_id, user_id, username, start_date, end_
         if commit['id'] not in seen_ids:
             seen_ids.add(commit['id'])
             unique_commits.append(commit)
-
     return unique_commits
 
 async def fetch_merge_requests(session, user_id, project_id, start_date, end_date):
@@ -207,8 +200,8 @@ async def fetch_comments(session, project_id, item_type, item_iid, user_id):
     return count
 
 # --- MAIN DATA GATHERING FUNCTION ---
-async def gather_user_data(username, start_date, end_date):
-    async with aiohttp.ClientSession() as session:
+async def gather_user_data(username, start_date, end_date, session, semaphore):
+    async with semaphore:
         try:
             # Fetch user info
             user = await fetch_json(
@@ -233,43 +226,40 @@ async def gather_user_data(username, start_date, end_date):
             total_mr_comments = 0
             total_issue_comments = 0
 
-            semaphore = asyncio.Semaphore(5)
-
             async def process_project(project):
                 nonlocal total_commits, total_mrs, total_issues, total_mr_comments, total_issue_comments
-                async with semaphore:
-                    project_id = project["id"]
-                    try:
-                        # Get commits
-                        commits = await fetch_commits(session, project_id, user_id, username, start_date, end_date)
-                        total_commits += len(commits)
+                project_id = project["id"]
+                try:
+                    # Get commits
+                    commits = await fetch_commits(session, project_id, user_id, username, start_date, end_date)
+                    total_commits += len(commits)
 
-                        # Get MRs
-                        mrs = await fetch_merge_requests(session, user_id, project_id, start_date, end_date)
-                        for mr in mrs:
-                            state = mr.get("state", "").lower()
-                            if state in total_mrs:
-                                total_mrs[state] += 1
-                        total_mrs["total"] += len(mrs)
+                    # Get MRs
+                    mrs = await fetch_merge_requests(session, user_id, project_id, start_date, end_date)
+                    for mr in mrs:
+                        state = mr.get("state", "").lower()
+                        if state in total_mrs:
+                            total_mrs[state] += 1
+                    total_mrs["total"] += len(mrs)
 
-                        # Get Issues
-                        issues = await fetch_issues(session, user_id, project_id, start_date, end_date)
-                        for issue in issues:
-                            state = issue.get("state", "").lower()
-                            if state in total_issues:
-                                total_issues[state] += 1
-                        total_issues["total"] += len(issues)
+                    # Get Issues
+                    issues = await fetch_issues(session, user_id, project_id, start_date, end_date)
+                    for issue in issues:
+                        state = issue.get("state", "").lower()
+                        if state in total_issues:
+                            total_issues[state] += 1
+                    total_issues["total"] += len(issues)
 
-                        # Get MR Comments
-                        for mr in mrs:
-                            total_mr_comments += await fetch_comments(session, project_id, "merge_requests", mr["iid"], user_id)
+                    # Get MR Comments
+                    for mr in mrs:
+                        total_mr_comments += await fetch_comments(session, project_id, "merge_requests", mr["iid"], user_id)
 
-                        # Get Issue Comments
-                        for issue in issues:
-                            total_issue_comments += await fetch_comments(session, project_id, "issues", issue["iid"], user_id)
+                    # Get Issue Comments
+                    for issue in issues:
+                        total_issue_comments += await fetch_comments(session, project_id, "issues", issue["iid"], user_id)
 
-                    except Exception as e:
-                        pass
+                except Exception:
+                    pass
 
             tasks = [process_project(project) for project in projects_to_process]
             await asyncio.gather(*tasks)
@@ -290,7 +280,7 @@ async def gather_user_data(username, start_date, end_date):
                 "total_contributions": total_commits + total_mrs["total"] + total_issues["total"]
             }
 
-        except Exception as e:
+        except Exception:
             return None
 
 # --- GRADING LOGIC ---
@@ -333,7 +323,6 @@ if uploaded_file is not None:
                 st.success(f"Loaded {len(df_input)} students from CSV")
                 st.dataframe(df_input.head(), use_container_width=True)
 
-                # Date range selection
                 col_start, col_end = st.columns(2)
                 start_date = col_start.date_input("Start Date", value=date(2020, 1, 1))
                 end_date = col_end.date_input("End Date", value=date.today())
@@ -353,25 +342,31 @@ if uploaded_file is not None:
                         st.cache_data.clear()
                         st.rerun()
                 elif st.button("Fetch Data"):
+                    BATCH_SIZE = 10
+                    SEMAPHORE_LIMIT = 10
+
                     progress_bar = st.progress(0)
                     status_text = st.empty()
-                    all_data = []
-                    total_students = len(df_input)
-                    for idx, row in df_input.iterrows():
-                        username = row['username']
-                        status_text.text(f"Fetching data for {username}... ({idx+1}/{total_students})")
-                        try:
-                            user_data = asyncio.run(gather_user_data(username, start_date, end_date))
-                            if user_data:
-                                for col in df_input.columns:
-                                    if col != 'username' and col not in user_data:
-                                        user_data[col] = row[col]
-                                all_data.append(user_data)
-                            else:
-                                st.warning(f"No data found for: {username}")
-                        except Exception as e:
-                            st.warning(f"Failed to fetch data for {username}: {str(e)}")
-                        progress_bar.progress((idx + 1) / total_students)
+
+                    async def fetch_all_users():
+                        connector = aiohttp.TCPConnector(limit_per_host=10)
+                        async with aiohttp.ClientSession(connector=connector) as session:
+                            semaphore = asyncio.Semaphore(SEMAPHORE_LIMIT)
+                            all_data = []
+
+                            for i in range(0, len(usernames), BATCH_SIZE):
+                                batch = usernames[i:i+BATCH_SIZE]
+                                tasks = [gather_user_data(u, start_date, end_date, session, semaphore) for u in batch]
+                                results = await asyncio.gather(*tasks)
+                                all_data.extend([r for r in results if r])
+                                percent_complete = min((i + BATCH_SIZE) / len(usernames), 1.0)
+                                progress_bar.progress(percent_complete)
+                                status_text.text(f"Fetched {min(i + BATCH_SIZE, len(usernames))}/{len(usernames)} users...")
+                                await asyncio.sleep(0.1)  # Give UI time to refresh
+                            return all_data
+
+                    loop = asyncio.new_event_loop()
+                    all_data = loop.run_until_complete(fetch_all_users())
                     if all_data:
                         df_results = pd.DataFrame(all_data)
                         st.session_state[f"{STATE_PREFIX}fetched_data"] = df_results
@@ -400,7 +395,6 @@ if uploaded_file is not None:
                     # Filter Controls
                     grade_options = ["All Grades", "Excellent", "Good", "Average", "Below Average"]
                     selected_grade = st.selectbox("Filter by Grade", grade_options)
-
                     metric_options = ["All Metrics", "Commits", "Merge Requests", "Issues", "Total Contributions"]
                     selected_metric = st.selectbox("Select Metric to Filter", metric_options)
 
@@ -445,6 +439,5 @@ if uploaded_file is not None:
                             "metric_filter": "All Metrics"
                         }
                         st.success("All data and settings have been reset.")
-
     except Exception as e:
         st.error(f"Error reading CSV: {str(e)}")
