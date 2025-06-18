@@ -524,3 +524,13 @@ if st.session_state.fetched_user_data:
                             st.write(f"  🕒 [Latest Issue]({issue_url}): `{latest_issue.get('title', 'No title')}` → `{latest_issue.get('state')}`")
 
                         st.markdown("---")
+
+
+
+
+
+
+
+
+
+
