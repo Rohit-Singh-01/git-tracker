@@ -1,8 +1,8 @@
-
 import streamlit as st
 import asyncio
 import aiohttp
 import pandas as pd
+import json
 from datetime import date
 from dateutil import parser
 
@@ -28,18 +28,29 @@ def reset():
 
 
 # --- API FUNCTIONS ---
-async def fetch_json(session, url, params=None):
+@st.cache_data(ttl=None, show_spinner=False)
+def fetch_json_cached(url, params_str=None):
+    import requests
     headers = {"PRIVATE-TOKEN": GITLAB_TOKEN}
-    async with session.get(url, headers=headers, params=params) as response:
-        response.raise_for_status()
-        return await response.json()
+    params = json.loads(params_str) if params_str else None
+    response = requests.get(url, headers=headers, params=params)
+    response.raise_for_status()
+    return response.json()
+
+
+async def fetch_json(session, url, params=None):
+    """Async wrapper that uses the cached sync function"""
+    params_str = json.dumps(params) if params else None
+    return await asyncio.get_event_loop().run_in_executor(
+        None, fetch_json_cached, url, params_str
+    )
 
 
 async def fetch_user(session, username):
-    users = await fetch_json(
-        session, f"{BASE_URL}/users", params={"username": username}
-    )
-    return users[0] if users else None
+    url = f"{BASE_URL}/users"
+    params = {"username": username}
+    data = await fetch_json(session, url, params)
+    return data[0] if data else None
 
 
 async def fetch_user_projects(session, user_id):
@@ -196,7 +207,8 @@ async def fetch_mr_comments(session, project_id, mr_iid, user_id):
 
 
 # --- COUNT HELPER ---
-def count_items_by_date(items, field, start, end):
+@st.cache_data(ttl=None, show_spinner=False)
+def count_items_by_date_cached(items, field, start, end):
     count = 0
     for item in items:
         try:
@@ -209,19 +221,26 @@ def count_items_by_date(items, field, start, end):
     return count
 
 
+def count_items_by_date(items, field, start_date, end_date):
+    """Non-cached version for direct use"""
+    return count_items_by_date_cached(items, field, start_date, end_date)
+
+
 # --- GATHER DATA ---
+@st.cache_data(ttl=None, show_spinner=False)
+def gather_user_data_cached(username):
+    """Cached wrapper for gather_user_data"""
+    return asyncio.run(gather_user_data(username))
+
+
 async def gather_user_data(username):
     async with aiohttp.ClientSession() as session:
         user = await fetch_user(session, username)
         if not user:
             raise ValueError("User not found")
-
         user_id = user["id"]
-        user_email = user.get("public_email") or user.get("email", "")
-
         personal_projects = await fetch_user_projects(session, user_id)
         contributed_projects = await fetch_contributed_projects(session, user_id)
-
         contrib_data = {}
 
         for proj in contributed_projects + personal_projects:
@@ -229,14 +248,12 @@ async def gather_user_data(username):
             pname = proj["name_with_namespace"]
             contrib_data[pname] = {"commits": [], "mrs": [], "issues": []}
 
-            # Fetch commits
             try:
                 commits = await fetch_commits(session, pid, user_id, username)
                 contrib_data[pname]["commits"] = commits
             except Exception as e:
                 print(f"Error fetching commits for {pname}: {e}")
 
-            # Fetch merge requests
             try:
                 mrs = await fetch_merge_requests(session, user_id, pid)
                 for mr in mrs:
@@ -249,7 +266,6 @@ async def gather_user_data(username):
             except Exception as e:
                 print(f"Error fetching MRs for {pname}: {e}")
 
-            # Fetch issues
             try:
                 issues = await fetch_issues(session, user_id, pid)
                 for issue in issues:
@@ -263,7 +279,6 @@ async def gather_user_data(username):
                 print(f"Error fetching issues for {pname}: {e}")
 
         return user, personal_projects, contributed_projects, contrib_data
-
 
 # --- UI ---
 st.title("📦 GitLab Bulk Tracker")
@@ -306,7 +321,7 @@ if start_date > end_date:
 usernames = st.session_state.usernames
 
 
-async def process_users():
+def process_users():
     for username in usernames:
         status = st.empty()
         user_container = st.container()
@@ -317,7 +332,7 @@ async def process_users():
 
         try:
             status.info(f"⏳ Fetching {username}...")
-            user, personal, contrib, contrib_data = await gather_user_data(username)
+            user, personal, contrib, contrib_data = gather_user_data_cached(username)
             st.session_state.bulk_data[username] = (user, personal, contrib, contrib_data)
             status.success(f"✅ {username} fetched")
         except Exception as e:
@@ -379,4 +394,4 @@ async def process_users():
 
 
 if usernames:
-    asyncio.run(process_users())
+    process_users()
